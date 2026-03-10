@@ -23,7 +23,7 @@ Start quantization:
 
 ```bash
 tmux new-session -d -s int8q-<short-name> \
-  "VENV={baseDir}/.venv && (test -d \$VENV || uv venv \$VENV) && uv pip install -p \$VENV --upgrade llmcompressor datasets sentencepiece && \$VENV/bin/python {baseDir}/scripts/quantize.py <model-path> [flags]; exec bash"
+  "VENV={baseDir}/.venv && (test -d \$VENV || uv venv \$VENV) && uv pip install -p \$VENV --upgrade llmcompressor datasets sentencepiece torchvision && \$VENV/bin/python {baseDir}/scripts/quantize.py <model-path> [flags]; exec bash"
 ```
 
 Session naming: use `int8q-` prefix + lowercase model short name (e.g. `int8q-qwen3.5-0.8b`, `int8q-llama3-8b`).
@@ -48,7 +48,7 @@ tmux capture-pane -t int8q-<short-name> -p -S -
 
 ```bash
 tmux new-session -d -s int8q-qwen3.5-0.8b \
-  "VENV={baseDir}/.venv && (test -d \$VENV || uv venv \$VENV) && uv pip install -p \$VENV --upgrade llmcompressor datasets sentencepiece && \$VENV/bin/python {baseDir}/scripts/quantize.py /workspace/models/Qwen/Qwen3.5-0.8B; exec bash"
+  "VENV={baseDir}/.venv && (test -d \$VENV || uv venv \$VENV) && uv pip install -p \$VENV --upgrade llmcompressor datasets sentencepiece torchvision && \$VENV/bin/python {baseDir}/scripts/quantize.py /workspace/models/Qwen/Qwen3.5-0.8B; exec bash"
 ```
 
 ## Examples
@@ -57,14 +57,14 @@ W8A16 quantization (weight-only INT8, keeps activations in FP16):
 
 ```bash
 tmux new-session -d -s int8q-llama3-8b \
-  "VENV={baseDir}/.venv && (test -d \$VENV || uv venv \$VENV) && uv pip install -p \$VENV --upgrade llmcompressor datasets sentencepiece && \$VENV/bin/python {baseDir}/scripts/quantize.py /workspace/models/meta-llama/Llama-3-8B --scheme W8A16; exec bash"
+  "VENV={baseDir}/.venv && (test -d \$VENV || uv venv \$VENV) && uv pip install -p \$VENV --upgrade llmcompressor datasets sentencepiece torchvision && \$VENV/bin/python {baseDir}/scripts/quantize.py /workspace/models/meta-llama/Llama-3-8B --scheme W8A16; exec bash"
 ```
 
 Custom calibration settings:
 
 ```bash
 tmux new-session -d -s int8q-qwen3-32b \
-  "VENV={baseDir}/.venv && (test -d \$VENV || uv venv \$VENV) && uv pip install -p \$VENV --upgrade llmcompressor datasets sentencepiece && \$VENV/bin/python {baseDir}/scripts/quantize.py /workspace/models/Qwen/Qwen3-32B --samples 256 --smoothing 0.7; exec bash"
+  "VENV={baseDir}/.venv && (test -d \$VENV || uv venv \$VENV) && uv pip install -p \$VENV --upgrade llmcompressor datasets sentencepiece torchvision && \$VENV/bin/python {baseDir}/scripts/quantize.py /workspace/models/Qwen/Qwen3-32B --samples 256 --smoothing 0.7; exec bash"
 ```
 
 ## Parameters

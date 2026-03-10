@@ -23,7 +23,10 @@ def build_recipe(scheme: str, smoothing: float):
 def _detect_split(dataset_id: str) -> str:
     from datasets import get_dataset_split_names
 
-    splits = get_dataset_split_names(dataset_id, trust_remote_code=True)
+    try:
+        splits = get_dataset_split_names(dataset_id, trust_remote_code=True)
+    except (TypeError, ValueError):
+        splits = get_dataset_split_names(dataset_id)
     for candidate in ("train_sft", "train"):
         if candidate in splits:
             return candidate
@@ -35,7 +38,10 @@ def prepare_dataset(dataset_id: str, tokenizer, num_samples: int, max_seq_len: i
 
     split = _detect_split(dataset_id)
     print(f"  Using split: {split}")
-    ds = load_dataset(dataset_id, split=split, trust_remote_code=True)
+    try:
+        ds = load_dataset(dataset_id, split=split, trust_remote_code=True)
+    except TypeError:
+        ds = load_dataset(dataset_id, split=split)
     ds = ds.shuffle(seed=42).select(range(min(num_samples, len(ds))))
 
     columns = ds.column_names
