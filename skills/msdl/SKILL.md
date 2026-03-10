@@ -1,5 +1,5 @@
 ---
-name: modelscope-download
+name: msdl
 description: "Download models from ModelScope (魔搭). Use when user wants to download a model by model ID (e.g. stepfun-ai/Step-3.5-Flash, Qwen/Qwen3-32B) from modelscope.cn to a local directory. No login required for public models. Supports filtering files by glob pattern and specifying revisions."
 metadata:
   {
@@ -73,7 +73,7 @@ Or configure in `~/.openclaw/openclaw.json`:
 {
   skills: {
     entries: {
-      "modelscope-download": {
+      "msdl": {
         env: {
           MODELSCOPE_CACHE: "/workspace/models",
         },
