@@ -1,3 +1,10 @@
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+source ~/.bashrc  
+
+nvm install 22
+nvm use 22
+
+npm install -g pnpm
 pnpm install
 pnpm ui:build 
 pnpm build
@@ -11,5 +18,12 @@ pnpm openclaw gateway run --bind loopback --port 18789
 
 #client side
 pnpm openclaw tui
-# /msdl Qwen/Qwen3-0.6B
-# /intq8 Qwen/Qwen3-0.6B
+
+#-------------- INT8  -----------------
+# /msdl Qwen/Qwen3.0-0.6B
+# /msdl  Qwen/Qwen-Image-Edit-2511
+
+
+#-------------- INT4  -----------------
+
+# MiniMaxAI/MiniMax-M2.1

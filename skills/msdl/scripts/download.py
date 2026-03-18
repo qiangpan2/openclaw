@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["modelscope"]
+# dependencies = ["modelscope", "packaging"]
 # ///
 """Download a model from ModelScope to a local directory."""
 
