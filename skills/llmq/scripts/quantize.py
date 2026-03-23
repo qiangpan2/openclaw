@@ -1,22 +1,26 @@
-"""Quantize a local model to INT8 using llmcompressor (W8A8 or W8A16)."""
+"""Quantize a local model to INT8/INT4 using llmcompressor (W8A8, W8A16, or W4A16)."""
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 
-def build_recipe(scheme: str, smoothing: float):
+def build_recipe(scheme: str, smoothing: float, group_size: int):
     from llmcompressor.modifiers.quantization import GPTQModifier
     from llmcompressor.modifiers.smoothquant import SmoothQuantModifier
 
     modifiers = []
     if scheme == "W8A8":
         modifiers.append(SmoothQuantModifier(smoothing_strength=smoothing))
-    modifiers.append(
-        GPTQModifier(targets="Linear", scheme=scheme, ignore=["lm_head"])
-    )
+
+    gptq_kwargs = {"targets": "Linear", "scheme": scheme, "ignore": ["lm_head"]}
+    if scheme == "W4A16":
+        gptq_kwargs["group_size"] = group_size
+
+    modifiers.append(GPTQModifier(**gptq_kwargs))
     return modifiers
 
 
@@ -76,16 +80,16 @@ def prepare_dataset(dataset_id: str, tokenizer, num_samples: int, max_seq_len: i
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Quantize a local model to INT8 using llmcompressor"
+        description="Quantize a local model to INT8/INT4 using llmcompressor"
     )
     parser.add_argument(
-        "model", help="Local model path, e.g. /workspace/models/Qwen/Qwen3.5-0.8B"
+        "model", help="Model path (relative to MODELSCOPE_CACHE or absolute), e.g. Qwen/Qwen3.5-0.8B"
     )
     parser.add_argument(
         "--scheme",
-        choices=["W8A8", "W8A16"],
+        choices=["W8A8", "W8A16", "W4A16"],
         default="W8A8",
-        help="Quantization scheme (default: W8A8)",
+        help="Quantization scheme: W8A8 (default, INT8 weight+activation), W4A16 (INT4 weight), W8A16 (INT8 weight-only)",
     )
     parser.add_argument(
         "--output",
@@ -115,9 +119,19 @@ def main():
         default=0.8,
         help="SmoothQuant smoothing strength, W8A8 only (default: 0.8)",
     )
+    parser.add_argument(
+        "--group-size",
+        type=int,
+        default=128,
+        help="Group size for INT4 quantization, W4A16 only (default: 128)",
+    )
     args = parser.parse_args()
 
-    model_path = Path(args.model).resolve()
+    model_path = Path(args.model)
+    if not model_path.is_absolute():
+        cache_dir = os.environ.get("MODELSCOPE_CACHE", "/workspace/models")
+        model_path = Path(cache_dir) / model_path
+    model_path = model_path.resolve()
     if not model_path.is_dir():
         print(f"Error: model path does not exist: {model_path}", file=sys.stderr)
         sys.exit(1)
@@ -132,6 +146,8 @@ def main():
     print(f"Dataset: {args.dataset}")
     if args.scheme == "W8A8":
         print(f"Smoothing: {args.smoothing}")
+    if args.scheme == "W4A16":
+        print(f"Group size: {args.group_size}")
     print()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -148,7 +164,7 @@ def main():
     dataset = prepare_dataset(args.dataset, tokenizer, args.samples, args.seq_len)
 
     print("Building quantization recipe ...")
-    recipe = build_recipe(args.scheme, args.smoothing)
+    recipe = build_recipe(args.scheme, args.smoothing, args.group_size)
 
     from llmcompressor import oneshot
 
@@ -170,6 +186,8 @@ def main():
     }
     if args.scheme == "W8A8":
         report["smoothing_strength"] = args.smoothing
+    if args.scheme == "W4A16":
+        report["group_size"] = args.group_size
 
     report_file = output_path / "quantize-report.json"
     with open(report_file, "w") as f:

@@ -21,9 +21,12 @@ pnpm openclaw tui
 
 #-------------- INT8  -----------------
 # /msdl Qwen/Qwen3.0-0.6B
-# /msdl  Qwen/Qwen-Image-Edit-2511
-
+# /msdl  Qwen/Qwen-Image-Edit-2511 https://huggingface.co/Qwen/Qwen-Image-Edit-2511
 
 #-------------- INT4  -----------------
 
 # MiniMaxAI/MiniMax-M2.1
+#https://huggingface.co/Qwen/Qwen3-235B-A22B
+#https://huggingface.co/deepseek-ai/DeepSeek-V3.2
+#https://huggingface.co/MiniMaxAI/MiniMax-M2.1
+
