@@ -13,7 +13,7 @@ pnpm build
 pnpm openclaw onboard --flow quickstart   
 
 #server side
-pnpm openclaw gateway run --bind loopback --port 18789 
+pnpm openclaw gateway run --bind loopback --port 18777 
 
 
 #client side

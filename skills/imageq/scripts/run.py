@@ -7,20 +7,39 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-
-def resolve_model_path(raw: str) -> Path:
-    p = Path(raw)
-    if not p.is_absolute():
-        cache = os.environ.get("MODELSCOPE_CACHE", "/workspace/models")
-        p = Path(cache) / p
-    p = p.resolve()
-    if not p.is_dir():
-        print(f"Error: model path does not exist or is not a directory: {p}", file=sys.stderr)
-        sys.exit(1)
-    return p
+from paths import resolve_model_path
 
 
-def replace_submodule(pipe, attr: str, path: Path, trust_remote_code: bool, label: str) -> None:
+def _parse_torch_dtype(raw: str):
+    import torch
+
+    mapping = {
+        "auto": None,
+        "float32": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+    }
+    return mapping[raw]
+
+
+def _detect_safetensors(override_dir: Path, mode: str):
+    """Return the use_safetensors kwarg value based on mode and directory contents."""
+    if mode == "safetensors":
+        return True
+    if mode == "pytorch":
+        return False
+    # auto: peek at what's in the directory
+    has_st = any(override_dir.glob("*.safetensors"))
+    has_bin = any(override_dir.glob("*.bin"))
+    if has_st:
+        return True
+    if has_bin:
+        return False
+    return None  # let diffusers decide
+
+
+def replace_submodule(pipe, attr: str, path: Path, trust_remote_code: bool,
+                      label: str, torch_dtype=None, use_safetensors=None) -> None:
     """Load weights with the same concrete class as the pipeline's existing submodule."""
     sub = getattr(pipe, attr, None)
     if sub is None:
@@ -30,12 +49,28 @@ def replace_submodule(pipe, attr: str, path: Path, trust_remote_code: bool, labe
         )
         sys.exit(1)
     cls = type(sub)
-    replacement = cls.from_pretrained(
-        str(path),
-        local_files_only=True,
-        trust_remote_code=trust_remote_code,
-    )
+    load_kw = {
+        "local_files_only": True,
+        "trust_remote_code": trust_remote_code,
+    }
+    if torch_dtype is not None:
+        load_kw["torch_dtype"] = torch_dtype
+    if use_safetensors is not None:
+        load_kw["use_safetensors"] = use_safetensors
+    replacement = cls.from_pretrained(str(path), **load_kw)
     setattr(pipe, attr, replacement)
+
+
+def _read_quantize_report(override_dir: Path):
+    """Read quantize-report.json from an override directory, if it exists."""
+    rpt = override_dir / "quantize-report.json"
+    if not rpt.is_file():
+        return None
+    try:
+        with open(rpt, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def main():
@@ -62,6 +97,19 @@ def main():
         help="Optional local directory to override VAE weights",
     )
     parser.add_argument(
+        "--torch-dtype",
+        choices=["auto", "float32", "float16", "bfloat16"],
+        default="bfloat16",
+        help="torch_dtype for pipeline and override loads (default: bfloat16)",
+    )
+    parser.add_argument(
+        "--override-weight-format",
+        choices=["auto", "safetensors", "pytorch"],
+        default="auto",
+        help="Weight format for override directories: auto detects from files, "
+             "pytorch forces .bin (for torchao quantized output), safetensors forces .safetensors (default: auto)",
+    )
+    parser.add_argument(
         "--trust-remote-code",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -81,9 +129,12 @@ def main():
     args = parser.parse_args()
 
     base = resolve_model_path(args.model)
+    torch_dtype = _parse_torch_dtype(args.torch_dtype)
 
     print(f"Model dir: {base}")
     print(f"MODELSCOPE_CACHE: {os.environ.get('MODELSCOPE_CACHE', '/workspace/models')}")
+    print(f"torch_dtype: {args.torch_dtype}")
+    print(f"override_weight_format: {args.override_weight_format}")
     print()
 
     from diffusers import DiffusionPipeline
@@ -92,30 +143,33 @@ def main():
         "local_files_only": True,
         "trust_remote_code": args.trust_remote_code,
     }
+    if torch_dtype is not None:
+        load_kw["torch_dtype"] = torch_dtype
     print("Loading DiffusionPipeline ...")
     pipe = DiffusionPipeline.from_pretrained(str(base), **load_kw)
     print("Load OK.")
 
     overrides = {}
+    quantization_reports = {}
 
-    if args.unet:
-        up = resolve_model_path(args.unet)
-        print(f"Loading override UNet from {up} ...")
-        replace_submodule(pipe, "unet", up, args.trust_remote_code, "UNet")
-        overrides["unet"] = str(up)
-        print("UNet override OK.")
-    if args.transformer:
-        tp = resolve_model_path(args.transformer)
-        print(f"Loading override transformer from {tp} ...")
-        replace_submodule(pipe, "transformer", tp, args.trust_remote_code, "transformer")
-        overrides["transformer"] = str(tp)
-        print("Transformer override OK.")
-    if args.vae:
-        vp = resolve_model_path(args.vae)
-        print(f"Loading override VAE from {vp} ...")
-        replace_submodule(pipe, "vae", vp, args.trust_remote_code, "VAE")
-        overrides["vae"] = str(vp)
-        print("VAE override OK.")
+    for attr, arg_val, label in [
+        ("unet", args.unet, "UNet"),
+        ("transformer", args.transformer, "transformer"),
+        ("vae", args.vae, "VAE"),
+    ]:
+        if arg_val is None:
+            continue
+        op = resolve_model_path(arg_val)
+        use_st = _detect_safetensors(op, args.override_weight_format)
+        print(f"Loading override {label} from {op} (use_safetensors={use_st}) ...")
+        replace_submodule(pipe, attr, op, args.trust_remote_code, label,
+                          torch_dtype=torch_dtype, use_safetensors=use_st)
+        overrides[attr] = str(op)
+        print(f"{label} override OK.")
+
+        qr = _read_quantize_report(op)
+        if qr is not None:
+            quantization_reports[attr] = qr
 
     if args.smoke:
         import torch
@@ -131,7 +185,10 @@ def main():
             "loaded_at": datetime.now(timezone.utc).isoformat(),
             "local_files_only": True,
             "trust_remote_code": args.trust_remote_code,
+            "torch_dtype": args.torch_dtype,
+            "override_weight_format": args.override_weight_format,
             "overrides": overrides,
+            "quantization_reports": quantization_reports if quantization_reports else None,
             "smoke_ran": args.smoke,
         }
         out = Path(args.report)

@@ -1,0 +1,7 @@
+torch>=2.5
+torchao>=0.7
+diffusers>=0.32
+transformers>=4.38
+accelerate>=0.26
+safetensors>=0.4
+torchvision>=0.20
