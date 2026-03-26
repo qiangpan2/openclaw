@@ -18,10 +18,10 @@ Example (replace `{msdlBase}` with the msdl skill directory on the host):
 
 ```bash
 tmux new-session -d -s ms-dl-qwen-image-edit \
-  "MODELSCOPE_CACHE=/workspace/models uv run {msdlBase}/scripts/download.py Qwen/Qwen-Image-Edit-2511"
+  "uv run {msdlBase}/scripts/download.py Qwen/Qwen-Image-Edit-2511"
 ```
 
-Then use **imageq** with model path `Qwen/Qwen-Image-Edit-2511` relative to `MODELSCOPE_CACHE`.
+Then use **imageq** with model path `Qwen/Qwen-Image-Edit-2511` relative to `/workspace/models`.
 
 ## ModelScope
 
@@ -30,33 +30,83 @@ Then use **imageq** with model path `Qwen/Qwen-Image-Edit-2511` relative to `MOD
 
 ## TorchAO quantization
 
-- `scripts/quantize.py` uses **torchao** for local diffusers submodule quantization.
+- `scripts/quantize.py` uses **torchao** for local diffusers pipeline quantization.
 - Current scheme mapping:
   - `W8A8` -> `torchao int8dq`
   - `W4A16` -> `torchao int4wo`
-- Current default target is `transformer`; `unet` / `vae` are available in the CLI but should be treated as less proven until tested on real checkpoints.
-- The output is a standalone diffusers component directory (`.bin` weights, `safe_serialization=False`) intended to be passed back into `scripts/run.py` via `--transformer`, `--unet`, or `--vae`.
-- By default, quantization metadata should live inside that output directory as `quantize-report.json`.
+- Default targets: `transformer vae`. Pass `--target transformer` to quantize only one component.
+- Output is a **complete diffusers pipeline directory** at `/workspace/models/<model-basename>-<scheme>/`:
+  - Quantized components: saved with `.bin` weights (`safe_serialization=False`)
+  - Non-quantized large components (e.g. `text_encoder`): fully copied
+  - Small metadata dirs (`tokenizer`, `scheduler`, `processor`): copied
+  - Root `quantize-report.json`: records all quantized components and scheme
+- The output pipeline can be loaded directly with `DiffusionPipeline.from_pretrained(output_path, local_files_only=True)`.
+- **Copy note:** non-quantized pipeline components (e.g. `text_encoder`) are fully copied into the output directory. No symlinks are used; the output pipeline directory is self-contained and can be moved independently.
+- Report format (`quantize-report.json` at pipeline root):
+  ```json
+  {
+    "source_pipeline": "/workspace/models/Qwen/Qwen-Image-Edit-2511",
+    "output_pipeline": "/workspace/models/Qwen-Image-Edit-2511-W8A8",
+    "scheme": "W8A8",
+    "torchao_scheme": "int8dq",
+    "torch_dtype": "bfloat16",
+    "group_size": null,
+    "quantized_at": "2026-03-26T00:00:00+00:00",
+    "components": {
+      "transformer": { "class": "Qwen2_5OmniTransformerModel", "source": "..." },
+      "vae": { "class": "AutoencoderKL", "source": "..." }
+    }
+  }
+  ```
 - Component class discovery uses `model_index.json` to avoid loading the entire pipeline into memory. If `model_index.json` is missing or the entry cannot be resolved, `quantize.py` falls back to a full `DiffusionPipeline.from_pretrained` (high memory; a warning is printed).
 
-## Submodule overrides
+## Submodule overrides (run.py)
 
 - Point `--unet`, `--transformer`, or `--vae` at a directory that contains a valid diffusers export (`config.json` + weights) for that component type.
-- `run.py` itself still does not run calibration or PTQ; it loads and optionally smoke-tests.
-- Quantization now lives in `scripts/quantize.py`, which prepares a compatible local component export first and then relies on `run.py` for validation.
-- Treat `run.py` as the acceptance-test step for a quantized component. When validating a quantized output directory, save the run metadata back into that same directory, for example `path/to/quantized-transformer/run-report.json`.
-- When loading torchao quantized overrides, pass `--override-weight-format pytorch` (or rely on `auto` if the directory only contains `.bin` files) so that `run.py` uses `use_safetensors=False`.
+- `run.py` without a model argument scans `/workspace/models` and prints `[PIPELINE] <name>` for each valid pipeline (contains `model_index.json`), then exits. Use this to discover available quantized pipelines before calling `run.py <name>`.
+- When loading quantized pipeline output from `quantize.py`, pass the output pipeline path directly as the `model` argument — no `--transformer` override needed, since the quantized components are already in place.
+- When validating torchao quantized overrides explicitly, pass `--override-weight-format pytorch` (or rely on `auto` if the directory only contains `.bin` files).
 - Both `quantize.py` and `run.py` default to `--torch-dtype bfloat16` so that the quantization dtype and the validation dtype stay consistent.
 
 ## Dependencies
 
-- All dependencies are declared in `requirements.txt` with minimum version constraints. Install via `uv pip install -p $VENV -r {baseDir}/requirements.txt`.
+- All dependencies are declared in `requirements.txt` with **exact pinned versions** (`==`) and a torch-specific CUDA index header. Install via `uv pip install -p $VENV -r {baseDir}/requirements.txt`.
 - Key version requirements:
-  - `torch>=2.5` (torchao ABI compatibility)
-  - `torchao>=0.7` (Int4WeightOnlyConfig, int8dq support)
-  - `diffusers>=0.32` (TorchAoConfig, PipelineQuantizationConfig)
+  - `torch+cu126` (CUDA 12.x build — system driver is CUDA 12.9, cu130 builds are incompatible)
+  - `torchao` pinned to a version where `float8_dynamic_activation_float8_weight` is available and ABI-compatible with the pinned torch
+  - `diffusers` pinned to a version whose `TorchAoConfig` is compatible with the pinned torchao
 - `torch` / `torchao` CUDA wheels must match the host CUDA toolkit version. If you see segfaults or `undefined symbol` errors, the most likely cause is a torch/CUDA mismatch.
 - The imageq venv is isolated from **llmq** / **msdl** venvs; do not install `modelscope` or `llmcompressor` here.
+
+## 已验证版本组合
+
+| 验证日期   | torch       | torchvision  | torchao | diffusers | CUDA build | 状态 |
+| ---------- | ----------- | ------------ | ------- | --------- | ---------- | ---- |
+| 2026-03-26 | 2.7.1+cu126 | 0.22.1+cu126 | 0.15.0  | 0.37.1    | cu126      | ✓    |
+
+## 依赖升级流程（agent 执行）
+
+触发条件：新模型需要更新 diffusers/torchao，或 tmux 里出现 `[ENV ERROR]`。
+
+```bash
+# 1. 查候选版本
+uv pip index versions torch --extra-index-url https://download.pytorch.org/whl/cu126
+uv pip index versions torchao
+uv pip index versions diffusers
+
+# 2. 临时 venv 测试候选组合（替换实际版本号）
+uv venv /tmp/imageq-test-venv --python 3.11
+uv pip install -p /tmp/imageq-test-venv \
+  "torch==${NEW_TORCH}+cu126" "torchvision==${NEW_TV}+cu126" \
+  "torchao==${NEW_TORCHAO}" "diffusers==${NEW_DIFFUSERS}" \
+  "transformers>=4.38" "accelerate>=0.26" "safetensors>=0.4" \
+  --extra-index-url https://download.pytorch.org/whl/cu126
+/tmp/imageq-test-venv/bin/python skills/imageq/scripts/env_check.py
+
+# 3a. [ENV OK] → 更新 requirements.txt + 版本兼容表 → commit
+# 3b. [ENV ERROR] → 降版本重试步骤 2
+rm -rf /tmp/imageq-test-venv
+```
 
 ## VRAM and smoke
 

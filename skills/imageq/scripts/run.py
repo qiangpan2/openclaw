@@ -2,12 +2,12 @@
 
 import argparse
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from paths import resolve_model_path
+from paths import resolve_model_path, MODELS_ROOT
+from env_check import check_env
 
 
 def _parse_torch_dtype(raw: str):
@@ -74,12 +74,18 @@ def _read_quantize_report(override_dir: Path):
 
 
 def main():
+    check_env()
     parser = argparse.ArgumentParser(
         description="Load a local diffusers pipeline (no download; use msdl first)"
     )
     parser.add_argument(
         "model",
-        help="Pipeline directory: relative to MODELSCOPE_CACHE or absolute",
+        nargs="?",
+        default=None,
+        help=(
+            "Pipeline name or path (relative to /workspace/models or absolute). "
+            "If omitted, lists all pipelines found in /workspace/models."
+        ),
     )
     parser.add_argument(
         "--unet",
@@ -128,11 +134,24 @@ def main():
     )
     args = parser.parse_args()
 
+    # No model specified: scan MODELS_ROOT and list available pipelines
+    if args.model is None:
+        if not MODELS_ROOT.is_dir():
+            print(f"Error: models root does not exist: {MODELS_ROOT}", file=sys.stderr)
+            sys.exit(1)
+        found = sorted(
+            d.name for d in MODELS_ROOT.iterdir()
+            if d.is_dir() and (d / "model_index.json").is_file()
+        )
+        for name in found:
+            print(f"[PIPELINE] {name}")
+        sys.exit(0)
+
     base = resolve_model_path(args.model)
     torch_dtype = _parse_torch_dtype(args.torch_dtype)
 
     print(f"Model dir: {base}")
-    print(f"MODELSCOPE_CACHE: {os.environ.get('MODELSCOPE_CACHE', '/workspace/models')}")
+    print(f"Models root: {MODELS_ROOT}")
     print(f"torch_dtype: {args.torch_dtype}")
     print(f"override_weight_format: {args.override_weight_format}")
     print()
