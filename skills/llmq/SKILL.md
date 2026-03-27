@@ -16,7 +16,7 @@ Start:
 
 ```bash
 tmux new-session -d -s llmq-<short-name> \
-  "VENV={baseDir}/.venv && (test -d \$VENV || uv venv \$VENV) && uv pip install -p \$VENV -r {baseDir}/requirements.txt && \$VENV/bin/python {baseDir}/scripts/quantize.py <model-path> [flags]; exec bash"
+  "VENV={baseDir}/.venv && (test -d \$VENV || uv venv \$VENV) && uv pip install -p \$VENV --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple -r {baseDir}/requirements.txt && \$VENV/bin/python {baseDir}/scripts/quantize.py <model-path> [flags]; exec bash"
 ```
 
 - Session name: `llmq-` + short model slug (e.g. `llmq-qwen3.5-0.8b`).
