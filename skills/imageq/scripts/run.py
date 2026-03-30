@@ -1,6 +1,7 @@
 """Load a local diffusers pipeline from disk (ModelScope layout via msdl). No downloads."""
 
 import argparse
+import inspect
 import json
 import sys
 from datetime import datetime, timezone
@@ -22,24 +23,84 @@ def _parse_torch_dtype(raw: str):
     return mapping[raw]
 
 
-def _detect_safetensors(override_dir: Path, mode: str):
-    """Return the use_safetensors kwarg value based on mode and directory contents."""
+def _resolve_override_weight_format(override_dir: Path, mode: str) -> tuple[bool | None, str, tuple[Path, ...], tuple[Path, ...]]:
+    """Infer use_safetensors and layout for a component override directory.
+
+    Sharded PyTorch exports use ``*.bin.index.json`` plus shard ``*.bin`` files; they must
+    not be mistaken for "pick safetensors because some other file exists" and need
+    ``use_safetensors=False`` so loaders follow the index.
+
+    Returns:
+        (use_safetensors, layout_tag, pytorch_bin_index_paths, safetensors_index_paths)
+    """
+    pytorch_bin_indices = tuple(sorted(override_dir.glob("*.bin.index.json")))
+    safetensors_indices = tuple(sorted(override_dir.glob("*.safetensors.index.json")))
+
     if mode == "safetensors":
-        return True
+        if pytorch_bin_indices:
+            print(
+                f"Error: override directory has PyTorch sharded weights ({pytorch_bin_indices[0].name}) "
+                "but --override-weight-format safetensors was requested.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return True, "safetensors_forced", pytorch_bin_indices, safetensors_indices
+
     if mode == "pytorch":
-        return False
-    # auto: peek at what's in the directory
+        if safetensors_indices and not pytorch_bin_indices:
+            print(
+                f"Warning: override directory has safetensors index ({safetensors_indices[0].name}) "
+                "while --override-weight-format pytorch was requested; load may fail.",
+                file=sys.stderr,
+            )
+        return False, "pytorch_forced", pytorch_bin_indices, safetensors_indices
+
+    # auto
+    if pytorch_bin_indices:
+        return (
+            False,
+            f"pytorch_sharded[{pytorch_bin_indices[0].name}]",
+            pytorch_bin_indices,
+            safetensors_indices,
+        )
+    if safetensors_indices:
+        return (
+            True,
+            f"safetensors_sharded[{safetensors_indices[0].name}]",
+            pytorch_bin_indices,
+            safetensors_indices,
+        )
+
     has_st = any(override_dir.glob("*.safetensors"))
     has_bin = any(override_dir.glob("*.bin"))
     if has_st:
-        return True
+        return True, "safetensors", pytorch_bin_indices, safetensors_indices
     if has_bin:
-        return False
-    return None  # let diffusers decide
+        return False, "pytorch_bin", pytorch_bin_indices, safetensors_indices
+    return None, "unspecified", pytorch_bin_indices, safetensors_indices
 
 
-def replace_submodule(pipe, attr: str, path: Path, trust_remote_code: bool,
-                      label: str, torch_dtype=None, use_safetensors=None) -> None:
+def _filter_pretrained_kwargs(cls, kw: dict) -> dict:
+    """Drop unsupported kwargs for ``cls.from_pretrained`` (varies by diffusers/transformers)."""
+    try:
+        sig = inspect.signature(cls.from_pretrained)
+    except (TypeError, ValueError):
+        return kw
+    params = sig.parameters
+    return {k: v for k, v in kw.items() if k in params}
+
+
+def replace_submodule(
+    pipe,
+    attr: str,
+    path: Path,
+    trust_remote_code: bool,
+    label: str,
+    torch_dtype=None,
+    use_safetensors=None,
+    layout_tag: str = "",
+    pytorch_bin_index_paths: tuple[Path, ...] = (),
+) -> None:
     """Load weights with the same concrete class as the pipeline's existing submodule."""
     sub = getattr(pipe, attr, None)
     if sub is None:
@@ -57,7 +118,46 @@ def replace_submodule(pipe, attr: str, path: Path, trust_remote_code: bool,
         load_kw["torch_dtype"] = torch_dtype
     if use_safetensors is not None:
         load_kw["use_safetensors"] = use_safetensors
-    replacement = cls.from_pretrained(str(path), **load_kw)
+
+    def _load_with(kw: dict):
+        filtered = _filter_pretrained_kwargs(cls, kw)
+        return cls.from_pretrained(str(path), **filtered)
+
+    def _is_sharded_pytorch_layout() -> bool:
+        return bool(pytorch_bin_index_paths) or "pytorch_sharded" in layout_tag
+
+    def _missing_monolithic_bin_message(msg: str) -> bool:
+        lower = msg.lower()
+        return (
+            "diffusion_pytorch_model.bin" in lower
+            or "pytorch_model.bin" in lower
+        ) and ("not found" in lower or "no file named" in lower or "does not exist" in lower)
+
+    try:
+        replacement = _load_with(load_kw)
+    except OSError as exc:
+        if _is_sharded_pytorch_layout() and _missing_monolithic_bin_message(str(exc)):
+            retry_kw = {**load_kw, "use_safetensors": False, "low_cpu_mem_usage": True}
+            try:
+                replacement = _load_with(retry_kw)
+            except OSError as exc2:
+                idx = pytorch_bin_index_paths[0] if pytorch_bin_index_paths else "(*.bin.index.json)"
+                print(
+                    f"Error: failed to load sharded PyTorch override for {label} from {path}\n"
+                    f"  Index: {idx}\n"
+                    f"  First error: {exc}\n"
+                    f"  Retry error: {exc2}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            if pytorch_bin_index_paths:
+                print(
+                    f"Error: override load failed for {label} ({path}); "
+                    f"directory contains PyTorch shard index {pytorch_bin_index_paths[0].name}: {exc}",
+                    file=sys.stderr,
+                )
+            raise
     setattr(pipe, attr, replacement)
 
 
@@ -112,7 +212,8 @@ def main():
         "--override-weight-format",
         choices=["auto", "safetensors", "pytorch"],
         default="auto",
-        help="Weight format for override directories: auto detects from files, "
+        help="Weight format for override directories: auto detects from files "
+             "(including *.bin.index.json / *.safetensors.index.json sharded layouts), "
              "pytorch forces .bin (for torchao quantized output), safetensors forces .safetensors (default: auto)",
     )
     parser.add_argument(
@@ -179,10 +280,24 @@ def main():
         if arg_val is None:
             continue
         op = resolve_model_path(arg_val)
-        use_st = _detect_safetensors(op, args.override_weight_format)
-        print(f"Loading override {label} from {op} (use_safetensors={use_st}) ...")
-        replace_submodule(pipe, attr, op, args.trust_remote_code, label,
-                          torch_dtype=torch_dtype, use_safetensors=use_st)
+        use_st, layout, bin_idx_paths, _st_idx_paths = _resolve_override_weight_format(
+            op, args.override_weight_format
+        )
+        print(
+            f"Loading override {label} from {op} "
+            f"(use_safetensors={use_st}, layout={layout}) ..."
+        )
+        replace_submodule(
+            pipe,
+            attr,
+            op,
+            args.trust_remote_code,
+            label,
+            torch_dtype=torch_dtype,
+            use_safetensors=use_st,
+            layout_tag=layout,
+            pytorch_bin_index_paths=bin_idx_paths,
+        )
         overrides[attr] = str(op)
         print(f"{label} override OK.")
 

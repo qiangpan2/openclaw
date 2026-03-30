@@ -87,11 +87,13 @@ session:    imageq-qwen-image-edit
 model-path: Qwen/Qwen-Image-Edit-2511 --smoke
 ```
 
-Validate a quantized transformer folder:
+Validate a quantized transformer folder (single `diffusion_pytorch_model.bin` or **sharded** `diffusion_pytorch_model.bin.index.json` + `*-of-*.bin` shards):
 
 ```
 model-path: Qwen/Qwen-Image-Edit-2511 --transformer path/to/quantized-transformer --override-weight-format pytorch --smoke --report path/to/quantized-transformer/run-report.json
 ```
+
+With sharded PyTorch weights, `auto` also works: `run.py` detects `*.bin.index.json` and forces the PyTorch index path (`use_safetensors=False`).
 
 Overrides load the base pipeline first, then replace each requested submodule using that component’s concrete class (`type(pipe.unet)` / `transformer` / `vae`) and `from_pretrained`; peak memory is higher than loading overrides alone, which is acceptable for smoke checks.
 
@@ -112,7 +114,7 @@ model-path: Qwen/Qwen-Image-Edit-2511 --transformer path/to/quantized-transforme
 | `model`                              | Pipeline root (relative to `/workspace/models` or absolute). **Optional** — if omitted, scans `/workspace/models` and prints `[PIPELINE] <name>` for each valid pipeline, then exits.                                                                                 |
 | `--unet` / `--transformer` / `--vae` | Optional local submodule directories.                                                                                                                                                                                                                                 |
 | `--torch-dtype`                      | `auto`, `float32`, `float16`, or `bfloat16` (default: `bfloat16`). Applied to both base pipeline and override loads.                                                                                                                                                  |
-| `--override-weight-format`           | `auto` (default), `safetensors`, or `pytorch`. Use `pytorch` for torchao quantized output (`.bin` files). `auto` detects from directory contents.                                                                                                                     |
+| `--override-weight-format`           | `auto` (default), `safetensors`, or `pytorch`. Use `pytorch` for torchao quantized output (`.bin` files). `auto` detects from directory contents, including **sharded** layouts: `*.bin.index.json` / `*.safetensors.index.json` (PyTorch index forces `use_safetensors=False`). |
 | `--no-trust-remote-code`             | Turn off `trust_remote_code`.                                                                                                                                                                                                                                         |
 | `--smoke`                            | After load, move pipeline to CUDA if available, else CPU.                                                                                                                                                                                                             |
 | `--report PATH`                      | Write validation metadata JSON (includes `quantization_reports` merged from each override's `quantize-report.json`). For quantized-component testing, store it inside the quantized component directory, for example `path/to/quantized-transformer/run-report.json`. |

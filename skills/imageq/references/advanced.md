@@ -36,7 +36,7 @@ Then use **imageq** with model path `Qwen/Qwen-Image-Edit-2511` relative to `/wo
   - `W4A16` -> `torchao int4wo`
 - Default targets: `transformer vae`. Pass `--target transformer` to quantize only one component.
 - Output is a **complete diffusers pipeline directory** at `/workspace/models/<model-basename>-<scheme>/`:
-  - Quantized components: saved with `.bin` weights (`safe_serialization=False`)
+  - Quantized components: saved with `.bin` weights (`safe_serialization=False`; large checkpoints may be **sharded** with `*.bin.index.json` and `*-of-*.bin` shard files)
   - Non-quantized large components (e.g. `text_encoder`): fully copied
   - Small metadata dirs (`tokenizer`, `scheduler`, `processor`): copied
   - Root `quantize-report.json`: records all quantized components and scheme
@@ -63,9 +63,14 @@ Then use **imageq** with model path `Qwen/Qwen-Image-Edit-2511` relative to `/wo
 ## Submodule overrides (run.py)
 
 - Point `--unet`, `--transformer`, or `--vae` at a directory that contains a valid diffusers export (`config.json` + weights) for that component type.
+- Supported weight layouts for overrides include:
+  - single-file `.safetensors` or `.bin`
+  - **sharded safetensors**: `*.safetensors.index.json` + shard `*.safetensors`
+  - **sharded PyTorch**: `*.bin.index.json` + shard `*.bin` (e.g. `diffusion_pytorch_model-00001-of-00003.bin`)
+- In `--override-weight-format auto`, `run.py` checks for `*.bin.index.json` / `*.safetensors.index.json` **before** inferring from loose `*.bin` / `*.safetensors`, so sharded PyTorch exports are not misclassified.
 - `run.py` without a model argument scans `/workspace/models` and prints `[PIPELINE] <name>` for each valid pipeline (contains `model_index.json`), then exits. Use this to discover available quantized pipelines before calling `run.py <name>`.
-- When loading quantized pipeline output from `quantize.py`, pass the output pipeline path directly as the `model` argument — no `--transformer` override needed, since the quantized components are already in place.
-- When validating torchao quantized overrides explicitly, pass `--override-weight-format pytorch` (or rely on `auto` if the directory only contains `.bin` files).
+- **Two valid workflows:** (1) After `quantize.py`, load the **full output pipeline** path as `model` (simplest). (2) Load the original pipeline as `model` and pass only a replaced component directory via `--transformer` / `--vae` / `--unet` (e.g. to test one sharded or quantized folder).
+- When validating torchao quantized overrides explicitly, pass `--override-weight-format pytorch` or use `auto` (recommended for sharded dirs: `auto` detects the index file).
 - Both `quantize.py` and `run.py` default to `--torch-dtype bfloat16` so that the quantization dtype and the validation dtype stay consistent.
 
 ## Dependencies
